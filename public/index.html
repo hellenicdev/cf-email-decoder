@@ -1,103 +1,129 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
   <meta charset="UTF-8">
-  <title>Cloudflare Email Extractor</title>
+  <title>Contact Crawler Dashboard</title>
   <style>
     body {
-      font-family: Arial, sans-serif;
-      max-width: 700px;
-      margin: 50px auto;
+      font-family: Arial;
+      max-width: 900px;
+      margin: auto;
       padding: 20px;
     }
 
-    h1 {
-      font-size: 22px;
-    }
-
-    input {
-      width: 100%;
+    input, button {
       padding: 10px;
-      font-size: 14px;
+      width: 100%;
       margin-top: 10px;
     }
 
     button {
-      margin-top: 10px;
-      padding: 10px 15px;
       cursor: pointer;
     }
 
-    pre {
+    .box {
       margin-top: 20px;
       background: #f4f4f4;
       padding: 15px;
       white-space: pre-wrap;
     }
 
-    .hint {
-      font-size: 12px;
-      color: gray;
-      margin-top: 5px;
+    .history {
+      margin-top: 20px;
+    }
+
+    .history button {
+      width: auto;
+      margin-right: 5px;
     }
   </style>
 </head>
 <body>
 
-<h1>🔍 Cloudflare Email Extractor</h1>
+<h1>🌐 Contact Crawler Dashboard</h1>
 
-<p>Enter a URL to extract obfuscated Cloudflare emails:</p>
+<input id="url" placeholder="Enter website URL (https://...)" />
+<input id="depth" placeholder="Crawl depth (default 1)" />
 
-<input id="url" placeholder="https://example.com" />
+<button onclick="crawl()">Start Crawl</button>
 
-<div class="hint">
-  Backend: https://cf-email-decoder.onrender.com
+<div class="history">
+  <h3>History</h3>
+  <div id="history"></div>
 </div>
 
-<button onclick="extract()">Extract Emails</button>
-
-<pre id="output">Waiting...</pre>
+<div class="box" id="output">Waiting...</div>
 
 <script>
-const API_URL = "https://cf-email-decoder.onrender.com/extract";
+const API = "https://cf-email-decoder.onrender.com/crawl";
 
-async function extract() {
-    const url = document.getElementById("url").value.trim();
+let history = [];
+
+function saveHistory(entry) {
+    history.unshift(entry);
+    if (history.length > 5) history.pop();
+
+    document.getElementById("history").innerHTML =
+        history.map((h, i) =>
+            `<button onclick="load(${i})">${h.url}</button>`
+        ).join("");
+}
+
+function load(i) {
+    document.getElementById("url").value = history[i].url;
+}
+
+async function crawl() {
+    const url = document.getElementById("url").value;
+    const depth = document.getElementById("depth").value || 1;
     const out = document.getElementById("output");
 
-    if (!url) {
-        out.textContent = "Please enter a URL.";
-        return;
-    }
+    out.textContent = "Crawling...";
 
-    out.textContent = "Loading...";
+    const res = await fetch(API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, depth })
+    });
 
-    try {
-        const res = await fetch(API_URL, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ url })
-        });
+    const data = await res.json();
 
-        const data = await res.json();
+    saveHistory({ url, data });
 
-        if (data.error) {
-            out.textContent = "Error: " + data.error;
-            return;
-        }
+    out.textContent =
+`Pages crawled:
+${data.pages.join("\n")}
 
-        if (!data.emails || data.emails.length === 0) {
-            out.textContent = "No Cloudflare emails found.";
-            return;
-        }
+Emails:
+${data.emails.join("\n") || "None"}
 
-        out.textContent = "Found emails:\n\n" + data.emails.join("\n");
+Cloudflare Emails:
+${data.cloudflare.join("\n") || "None"}
 
-    } catch (err) {
-        out.textContent = "Failed to connect to backend.";
-    }
+Phones:
+${data.phones.join("\n") || "None"}
+`;
+
+// export JSON button
+    window.lastData = data;
+}
+</script>
+
+<button onclick="download()">⬇ Export JSON</button>
+
+<script>
+function download() {
+    if (!window.lastData) return;
+
+    const blob = new Blob(
+        [JSON.stringify(window.lastData, null, 2)],
+        { type: "application/json" }
+    );
+
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "crawl-result.json";
+    a.click();
 }
 </script>
 
