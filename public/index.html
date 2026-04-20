@@ -1,50 +1,103 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>Cloudflare Email Extractor</title>
   <style>
-    body { font-family: Arial; padding: 20px; }
-    input { width: 100%; padding: 10px; }
-    button { margin-top: 10px; padding: 10px; }
-    pre { margin-top: 15px; background: #f4f4f4; padding: 10px; }
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 700px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+
+    h1 {
+      font-size: 22px;
+    }
+
+    input {
+      width: 100%;
+      padding: 10px;
+      font-size: 14px;
+      margin-top: 10px;
+    }
+
+    button {
+      margin-top: 10px;
+      padding: 10px 15px;
+      cursor: pointer;
+    }
+
+    pre {
+      margin-top: 20px;
+      background: #f4f4f4;
+      padding: 15px;
+      white-space: pre-wrap;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: gray;
+      margin-top: 5px;
+    }
   </style>
 </head>
 <body>
 
-<h2>CF Email Extractor (Backend Powered)</h2>
+<h1>🔍 Cloudflare Email Extractor</h1>
 
-<input id="url" placeholder="Enter URL (https://...)" />
+<p>Enter a URL to extract obfuscated Cloudflare emails:</p>
+
+<input id="url" placeholder="https://example.com" />
+
+<div class="hint">
+  Backend: https://cf-email-decoder.onrender.com
+</div>
+
 <button onclick="extract()">Extract Emails</button>
 
-<pre id="out"></pre>
+<pre id="output">Waiting...</pre>
 
 <script>
+const API_URL = "https://cf-email-decoder.onrender.com/extract";
+
 async function extract() {
-    const url = document.getElementById("url").value;
-    const out = document.getElementById("out");
+    const url = document.getElementById("url").value.trim();
+    const out = document.getElementById("output");
+
+    if (!url) {
+        out.textContent = "Please enter a URL.";
+        return;
+    }
 
     out.textContent = "Loading...";
 
-    const res = await fetch("/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url })
-    });
+    try {
+        const res = await fetch(API_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ url })
+        });
 
-    const data = await res.json();
+        const data = await res.json();
 
-    if (data.error) {
-        out.textContent = data.error;
-        return;
+        if (data.error) {
+            out.textContent = "Error: " + data.error;
+            return;
+        }
+
+        if (!data.emails || data.emails.length === 0) {
+            out.textContent = "No Cloudflare emails found.";
+            return;
+        }
+
+        out.textContent = "Found emails:\n\n" + data.emails.join("\n");
+
+    } catch (err) {
+        out.textContent = "Failed to connect to backend.";
     }
-
-    if (data.emails.length === 0) {
-        out.textContent = "No Cloudflare emails found.";
-        return;
-    }
-
-    out.textContent = "Emails:\n" + data.emails.join("\n");
 }
 </script>
 
