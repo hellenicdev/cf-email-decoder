@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Cloudflare Email Extractor</title>
+  <style>
+    body { font-family: Arial; padding: 20px; }
+    input { width: 100%; padding: 10px; }
+    button { margin-top: 10px; padding: 10px; }
+    pre { margin-top: 15px; background: #f4f4f4; padding: 10px; }
+  </style>
+</head>
+<body>
+
+<h2>CF Email Extractor (Backend Powered)</h2>
+
+<input id="url" placeholder="Enter URL (https://...)" />
+<button onclick="extract()">Extract Emails</button>
+
+<pre id="out"></pre>
+
+<script>
+async function extract() {
+    const url = document.getElementById("url").value;
+    const out = document.getElementById("out");
+
+    out.textContent = "Loading...";
+
+    const res = await fetch("/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url })
+    });
+
+    const data = await res.json();
+
+    if (data.error) {
+        out.textContent = data.error;
+        return;
+    }
+
+    if (data.emails.length === 0) {
+        out.textContent = "No Cloudflare emails found.";
+        return;
+    }
+
+    out.textContent = "Emails:\n" + data.emails.join("\n");
+}
+</script>
+
+</body>
+</html>
