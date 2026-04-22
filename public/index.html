@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Contact Crawler Dashboard</title>
+  <title>Contact Crawler Pro</title>
   <style>
     body {
       font-family: Arial;
@@ -11,9 +11,9 @@
       padding: 20px;
     }
 
-    input, button {
-      padding: 10px;
+    input, select, button {
       width: 100%;
+      padding: 10px;
       margin-top: 10px;
     }
 
@@ -21,91 +21,72 @@
       cursor: pointer;
     }
 
-    .box {
+    pre {
       margin-top: 20px;
       background: #f4f4f4;
       padding: 15px;
       white-space: pre-wrap;
     }
 
-    .history {
-      margin-top: 20px;
-    }
-
-    .history button {
-      width: auto;
-      margin-right: 5px;
+    .title {
+      font-size: 22px;
+      margin-bottom: 10px;
     }
   </style>
 </head>
 <body>
 
-<h1>🌐 Contact Crawler Dashboard</h1>
+<div class="title">🌐 Contact Crawler Pro</div>
+
+<select id="mode">
+  <option value="all">All</option>
+  <option value="emails">Emails only</option>
+  <option value="phones">Phones only</option>
+  <option value="sites">Sites only</option>
+</select>
 
 <input id="url" placeholder="Enter website URL (https://...)" />
-<input id="depth" placeholder="Crawl depth (default 1)" />
 
 <button onclick="crawl()">Start Crawl</button>
 
-<div class="history">
-  <h3>History</h3>
-  <div id="history"></div>
-</div>
-
-<div class="box" id="output">Waiting...</div>
+<pre id="output">Waiting...</pre>
 
 <script>
 const API = "https://cf-email-decoder.onrender.com/crawl";
 
-let history = [];
-
-function saveHistory(entry) {
-    history.unshift(entry);
-    if (history.length > 5) history.pop();
-
-    document.getElementById("history").innerHTML =
-        history.map((h, i) =>
-            `<button onclick="load(${i})">${h.url}</button>`
-        ).join("");
-}
-
-function load(i) {
-    document.getElementById("url").value = history[i].url;
-}
-
 async function crawl() {
     const url = document.getElementById("url").value;
-    const depth = document.getElementById("depth").value || 1;
+    const mode = document.getElementById("mode").value;
     const out = document.getElementById("output");
 
     out.textContent = "Crawling...";
 
-    const res = await fetch(API, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, depth })
-    });
+    try {
+        const res = await fetch(API, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url, mode })
+        });
 
-    const data = await res.json();
+        const data = await res.json();
 
-    saveHistory({ url, data });
-
-    out.textContent =
+        out.textContent =
 `Pages crawled:
-${data.pages.join("\n")}
+${(data.pages || []).join("\n")}
 
 Emails:
-${data.emails.join("\n") || "None"}
-
-Cloudflare Emails:
-${data.cloudflare.join("\n") || "None"}
+${(data.emails || []).join("\n") || "None"}
 
 Phones:
-${data.phones.join("\n") || "None"}
+${(data.phones || []).join("\n") || "None"}
+
+Sites:
+${(data.sites || []).join("\n") || "None"}
 `;
 
-// export JSON button
-    window.lastData = data;
+    } catch (e) {
+        out.textContent = "Error contacting backend.";
+    }
 }
 </script>
 
@@ -126,6 +107,18 @@ function download() {
     a.click();
 }
 </script>
+
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-9FWQFZME3Z"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+
+        function gtag() {
+            dataLayer.push(arguments);
+        }
+        gtag('js', new Date());
+
+        gtag('config', 'G-9FWQFZME3Z');
+    </script>
 
 </body>
 </html>
