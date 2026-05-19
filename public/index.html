@@ -1,65 +1,176 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Contact Crawler Pro</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CF Email Decoder</title>
   <style>
-    body {
-      font-family: Arial;
-      max-width: 900px;
-      margin: auto;
-      padding: 20px;
+    * {
+      box-sizing: border-box;
     }
-
-    input, select, button {
-      width: 100%;
-      padding: 10px;
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px;
+      background: #fafafa;
+      color: #222;
+    }
+    h1 {
+      font-size: 24px;
+      margin: 0 0 4px 0;
+    }
+    .subtitle {
+      color: #666;
+      margin-bottom: 20px;
+      font-size: 14px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: stretch;
+    }
+    .row select,
+    .row input {
+      flex: 1;
+    }
+    select, input, button {
+      padding: 10px 14px;
+      font-size: 15px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: #fff;
+    }
+    button {
+      background: #1a73e8;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    button:hover {
+      background: #1557b0;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    button.secondary {
+      background: #5f6368;
+    }
+    button.secondary:hover {
+      background: #444;
+    }
+    pre {
+      background: #f4f4f4;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 16px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      font-size: 13px;
+      min-height: 100px;
+      margin: 0;
+    }
+    .stats {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .stat {
+      background: #f0f4ff;
+      border-radius: 6px;
+      padding: 10px 16px;
+      text-align: center;
+      flex: 1;
+      min-width: 80px;
+    }
+    .stat .num {
+      font-size: 22px;
+      font-weight: 700;
+      color: #1a73e8;
+    }
+    .stat .label {
+      font-size: 12px;
+      color: #555;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
       margin-top: 10px;
     }
-
-    button {
-      cursor: pointer;
+    .error {
+      color: #d93025;
+      font-weight: 500;
     }
-
-    pre {
+    .info {
+      font-size: 12px;
+      color: #888;
       margin-top: 20px;
-      background: #f4f4f4;
-      padding: 15px;
-      white-space: pre-wrap;
-    }
-
-    .title {
-      font-size: 22px;
-      margin-bottom: 10px;
     }
   </style>
 </head>
 <body>
 
-<div class="title">🌐 Contact Crawler Pro</div>
+<h1>CF Email Decoder</h1>
+<div class="subtitle">Extract emails (including Cloudflare-protected), phones, and links from any website</div>
 
-<select id="mode">
-  <option value="all">All</option>
-  <option value="emails">Emails only</option>
-  <option value="phones">Phones only</option>
-  <option value="sites">Sites only</option>
-</select>
+<div class="card">
+  <div class="row">
+    <select id="mode">
+      <option value="all">All</option>
+      <option value="emails">Emails only</option>
+      <option value="phones">Phones only</option>
+      <option value="sites">Sites only</option>
+    </select>
+    <input id="url" type="url" placeholder="https://example.com" autofocus />
+    <button id="crawlBtn" onclick="crawl()">Crawl</button>
+  </div>
+</div>
 
-<input id="url" placeholder="Enter website URL (https://...)" />
+<div id="stats" class="stats" style="display:none;"></div>
 
-<button onclick="crawl()">Start Crawl</button>
+<div class="card">
+  <pre id="output">Enter a URL and click "Crawl" to begin.</pre>
+</div>
 
-<pre id="output">Waiting...</pre>
+<div class="actions">
+  <button class="secondary" onclick="download()" id="exportBtn" disabled>Export JSON</button>
+  <button class="secondary" onclick="clearOutput()">Clear</button>
+</div>
+
+<div class="info">Cloudflare <code>data-cfemail</code> protected emails are automatically decoded via XOR decryption.</div>
 
 <script>
-const API = "https://cf-email-decoder.onrender.com/crawl";
+const API = window.location.origin + "/crawl";
+let lastData = null;
 
 async function crawl() {
-    const url = document.getElementById("url").value;
+    const url = document.getElementById("url").value.trim();
     const mode = document.getElementById("mode").value;
     const out = document.getElementById("output");
+    const btn = document.getElementById("crawlBtn");
+    const stats = document.getElementById("stats");
 
+    if (!url) {
+        out.textContent = "Please enter a URL.";
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Crawling...";
     out.textContent = "Crawling...";
+    stats.style.display = "none";
+    document.getElementById("exportBtn").disabled = true;
 
     try {
         const res = await fetch(API, {
@@ -70,59 +181,67 @@ async function crawl() {
 
         const data = await res.json();
 
-        out.textContent =
-`Pages crawled:
-${(data.pages || []).join("\n")}
+        if (res.status !== 200) {
+            out.textContent = "Error: " + (data.error || "Unknown error");
+            return;
+        }
 
-Emails:
-${(data.emails || []).join("\n") || "None"}
+        lastData = data;
 
-Phones:
-${(data.phones || []).join("\n") || "None"}
+        const pages = data.pages || [];
+        const emails = data.emails || [];
+        const phones = data.phones || [];
+        const sites = data.sites || [];
 
-Sites:
-${(data.sites || []).join("\n") || "None"}
-`;
+        document.getElementById("exportBtn").disabled = false;
 
+        stats.style.display = "flex";
+        stats.innerHTML =
+            `<div class="stat"><div class="num">${pages.length}</div><div class="label">Pages</div></div>` +
+            `<div class="stat"><div class="num">${emails.length}</div><div class="label">Emails</div></div>` +
+            `<div class="stat"><div class="num">${phones.length}</div><div class="label">Phones</div></div>` +
+            `<div class="stat"><div class="num">${sites.length}</div><div class="label">Links</div></div>`;
+
+        let text = "";
+        if (pages.length) text += "Pages crawled:\n" + pages.join("\n") + "\n\n";
+        if (emails.length) text += "Emails:\n" + emails.join("\n") + "\n\n";
+        if (phones.length) text += "Phones:\n" + phones.join("\n") + "\n\n";
+        if (sites.length) text += "Sites:\n" + sites.join("\n") + "\n\n";
+        if (!text) text = "Nothing found on this page.";
+
+        out.textContent = text.trim();
     } catch (e) {
-        out.textContent = "Error contacting backend.";
+        out.textContent = "Error contacting backend. Make sure the server is running.";
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Crawl";
     }
 }
-</script>
 
-<button onclick="download()">⬇ Export JSON</button>
-
-<script>
 function download() {
-    if (!window.lastData) return;
-
+    if (!lastData) return;
     const blob = new Blob(
-        [JSON.stringify(window.lastData, null, 2)],
+        [JSON.stringify(lastData, null, 2)],
         { type: "application/json" }
     );
-
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "crawl-result.json";
     a.click();
+    URL.revokeObjectURL(a.href);
 }
+
+function clearOutput() {
+    document.getElementById("output").textContent = "Cleared.";
+    document.getElementById("stats").style.display = "none";
+    document.getElementById("exportBtn").disabled = true;
+    lastData = null;
+}
+
+document.getElementById("url").addEventListener("keydown", e => {
+    if (e.key === "Enter") crawl();
+});
 </script>
 
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-9FWQFZME3Z"></script>
-    <script>
-        window.dataLayer = window.dataLayer || [];
-
-        function gtag() {
-            dataLayer.push(arguments);
-        }
-        gtag('js', new Date());
-
-        gtag('config', 'G-9FWQFZME3Z');
-    </script>
-
 </body>
-<footer style="position: fixed; bottom: 0; left: 0; width: 100%; z-index: 9999; text-align: center; font-size: 14px; color: gray; background: white;
-">
-  © 2026 HellenicDev — All projects and content belong to HellenicDev.
-</footer>
 </html>
