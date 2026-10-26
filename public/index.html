@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CF Email Decoder</title>
+  <meta name="description" content="Educational crawler that decodes Cloudflare-protected email addresses and lists phone numbers and links from pages you are allowed to fetch. It obeys robots.txt and does not store results.">
+  <link rel="canonical" href="https://hellenicdev.eu/cf-email-decoder/public/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="CF Email Decoder">
+  <meta property="og:description" content="Educational crawler that decodes Cloudflare-protected email addresses and lists phone numbers and links from pages you are allowed to fetch. It obeys robots.txt and does not store results.">
+  <meta property="og:url" content="https://hellenicdev.eu/cf-email-decoder/public/">
   <style>
     * {
       box-sizing: border-box;
@@ -117,13 +123,30 @@
       color: #888;
       margin-top: 20px;
     }
+    .terms h2 {
+      font-size: 18px;
+      margin: 0 0 8px 0;
+    }
+    .terms p,
+    .terms li {
+      font-size: 14px;
+      line-height: 1.45;
+      color: #333;
+    }
+    .terms ul {
+      margin: 8px 0 0 0;
+      padding-left: 18px;
+    }
   </style>
 </head>
 <body>
 
-<h1>CF Email Decoder</h1>
-<div class="subtitle">Extract emails (including Cloudflare-protected), phones, and links from any website</div>
+<header>
+  <h1>CF Email Decoder</h1>
+  <p class="subtitle">Decode Cloudflare-protected emails and list phone numbers and links from pages you are allowed to crawl.</p>
+</header>
 
+<main>
 <div class="card">
   <div class="row">
     <select id="mode">
@@ -148,7 +171,21 @@
   <button class="secondary" onclick="clearOutput()">Clear</button>
 </div>
 
-<div class="info">Cloudflare <code>data-cfemail</code> protected emails are automatically decoded via XOR decryption.</div>
+<p class="info">Cloudflare <code>data-cfemail</code> protected emails are automatically decoded via XOR decryption. A crawl fetches at most 20 pages, skips private and metadata addresses, and obeys robots.txt. Results are not stored.</p>
+
+<section class="card terms" id="terms" aria-labelledby="terms-heading">
+  <h2 id="terms-heading">Terms of use</h2>
+  <p>This tool is for educational use. It fetches pages you submit, decodes Cloudflare-protected email addresses, and can list phone numbers and links that appear on those pages.</p>
+  <ul>
+    <li>Only crawl sites you are allowed to access. You must follow the site's own terms, its robots.txt, and the law, including the GDPR.</li>
+    <li>Do not use this tool to harvest personal data from third parties without a lawful basis and, where the law requires it, their consent.</li>
+    <li>The crawler requests at most 20 pages, refuses responses larger than 2 MB, and will not fetch a URL that robots.txt disallows.</li>
+    <li>It does not crawl loopback, link-local, private-network, or cloud metadata addresses.</li>
+    <li>Crawl results are returned to your browser and are not stored or written to server logs.</li>
+    <li>You are responsible for how you use and share anything the tool returns. The tool is provided as is, without warranty.</li>
+  </ul>
+</section>
+</main>
 
 <script>
 const API = "https://cf-email-decoder.onrender.com/crawl";
