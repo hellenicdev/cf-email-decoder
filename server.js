@@ -1,16 +1,319 @@
 const express = require("express");
 const axios = require("axios");
+const dns = require("dns").promises;
+const net = require("net");
+const ipaddr = require("ipaddr.js");
+const rateLimit = require("express-rate-limit");
+const robotsParser = require("robots-parser");
 const { URL } = require("url");
 
-const app = express();
+const DEFAULT_ALLOWED_ORIGIN = "https://hellenicdev.eu";
+const MAX_PAGES = 20;
+const MAX_CONTENT_BYTES = 2 * 1024 * 1024;
+const MAX_ROBOTS_BYTES = 500 * 1024;
+const MAX_REDIRECTS = 5;
+const REQUEST_TIMEOUT_MS = 15000;
+const DNS_TIMEOUT_MS = 5000;
+const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const RATE_LIMIT_MAX = 10;
+const USER_AGENT = "ContactCrawler/1.0 (+https://hellenicdev.eu/cf-email-decoder/public/)";
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-app.use(express.json({ limit: "5mb" }));
+const BLOCKED_HOSTS = new Set([
+    "localhost",
+    "localhost.localdomain",
+    "metadata.google.internal",
+    "metadata.goog",
+]);
 
-app.use((req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    next();
-});
+class HttpError extends Error {
+    constructor(status, message) {
+        super(message);
+        this.name = "HttpError";
+        this.status = status;
+    }
+}
+
+class SafeUrlError extends HttpError {
+    constructor(message = "This URL is not allowed.") {
+        super(400, message);
+        this.name = "SafeUrlError";
+    }
+}
+
+class RobotsDisallowedError extends HttpError {
+    constructor(reason = "disallowed") {
+        super(
+            403,
+            reason === "unavailable"
+                ? "Crawling was skipped because robots.txt could not be confirmed."
+                : "Crawling this URL is disallowed by robots.txt."
+        );
+        this.name = "RobotsDisallowedError";
+        this.reason = reason;
+    }
+}
+
+class ResponseTooLargeError extends HttpError {
+    constructor() {
+        super(413, "The response is larger than 2 MB.");
+        this.name = "ResponseTooLargeError";
+    }
+}
+
+const ALLOW_ALL = Object.freeze({ allowAll: true });
+const DENY_ALL = Object.freeze({ denyAll: true, reason: "disallowed" });
+const DENY_UNAVAILABLE = Object.freeze({ denyAll: true, reason: "unavailable" });
+
+let filteringAgents = null;
+
+async function getFilteringAgents() {
+    if (!filteringAgents) {
+        const { RequestFilteringHttpAgent, RequestFilteringHttpsAgent } = await import("request-filtering-agent");
+        filteringAgents = {
+            httpAgent: new RequestFilteringHttpAgent({ keepAlive: false }),
+            httpsAgent: new RequestFilteringHttpsAgent({ keepAlive: false }),
+        };
+    }
+    return filteringAgents;
+}
+
+function normalizeHost(hostname) {
+    let host = String(hostname || "").trim().toLowerCase();
+    if (host.startsWith("[") && host.endsWith("]")) {
+        host = host.slice(1, -1);
+    }
+    const zone = host.indexOf("%");
+    if (zone !== -1) host = host.slice(0, zone);
+    if (host.endsWith(".")) host = host.slice(0, -1);
+    return host;
+}
+
+function isBlockedIp(address) {
+    if (!net.isIP(address)) return true;
+    try {
+        let parsed = ipaddr.parse(address);
+        if (parsed.kind() === "ipv6" && parsed.isIPv4MappedAddress()) {
+            parsed = parsed.toIPv4Address();
+        }
+        return parsed.range() !== "unicast";
+    } catch {
+        return true;
+    }
+}
+
+function isBlockedHostname(hostname) {
+    const host = normalizeHost(hostname);
+    if (!host) return true;
+    if (BLOCKED_HOSTS.has(host)) return true;
+    if (host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true;
+    if (net.isIP(host)) return isBlockedIp(host);
+    if (!host.includes(".")) return true;
+    return false;
+}
+
+async function lookupAll(hostname) {
+    let timer;
+    try {
+        return await Promise.race([
+            dns.lookup(hostname, { all: true, verbatim: true }),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error("dns timeout")), DNS_TIMEOUT_MS);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function assertSafeUrl(urlString) {
+    let parsed;
+    try {
+        parsed = new URL(urlString);
+    } catch {
+        throw new SafeUrlError("Invalid URL. Must start with http:// or https://");
+    }
+
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new SafeUrlError("Invalid URL. Must start with http:// or https://");
+    }
+    if (parsed.username || parsed.password) {
+        throw new SafeUrlError("This URL is not allowed.");
+    }
+
+    const host = normalizeHost(parsed.hostname);
+    if (!host || isBlockedHostname(host)) {
+        throw new SafeUrlError("This URL is not allowed.");
+    }
+
+    if (net.isIP(host)) return parsed;
+
+    let records;
+    try {
+        records = await lookupAll(host);
+    } catch {
+        throw new SafeUrlError("Could not resolve host.");
+    }
+    if (!Array.isArray(records) || records.length === 0) {
+        throw new SafeUrlError("Could not resolve host.");
+    }
+    for (const record of records) {
+        if (!record || !record.address || isBlockedIp(record.address)) {
+            throw new SafeUrlError("This URL is not allowed.");
+        }
+    }
+    return parsed;
+}
+
+function isObviouslyBlocked(urlString) {
+    try {
+        const parsed = new URL(urlString);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return true;
+        if (parsed.username || parsed.password) return true;
+        return isBlockedHostname(parsed.hostname);
+    } catch {
+        return true;
+    }
+}
+
+function rethrowRequestError(err) {
+    if (err instanceof HttpError) throw err;
+    const message = String(err && err.message ? err.message : "");
+    if (/private IP address|meta IP address|is not allowed\. Because/i.test(message)) {
+        throw new SafeUrlError("This URL is not allowed.");
+    }
+    if (/maxContentLength|maxBodyLength/i.test(message)) {
+        throw new ResponseTooLargeError();
+    }
+    throw err;
+}
+
+async function requestOnce(url, ctx = {}, maxBytes = MAX_CONTENT_BYTES) {
+    await assertSafeUrl(url);
+    const agents = await getFilteringAgents();
+    const config = {
+        headers: {
+            "User-Agent": USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+        },
+        timeout: REQUEST_TIMEOUT_MS,
+        maxRedirects: 0,
+        maxContentLength: maxBytes,
+        maxBodyLength: maxBytes,
+        httpAgent: agents.httpAgent,
+        httpsAgent: agents.httpsAgent,
+        proxy: false,
+        responseType: "text",
+        transformResponse: [(data) => data],
+        validateStatus: () => true,
+    };
+
+    const httpGet = ctx.httpGet || axios.get.bind(axios);
+    let res;
+    try {
+        res = await httpGet(url, config);
+    } catch (err) {
+        rethrowRequestError(err);
+    }
+
+    if (typeof res.data === "string" && Buffer.byteLength(res.data) > maxBytes) {
+        throw new ResponseTooLargeError();
+    }
+    return res;
+}
+
+function robotsAllow(robots, url) {
+    if (!robots || robots.allowAll) return true;
+    if (robots.denyAll) return false;
+    try {
+        return robots.isAllowed(url, USER_AGENT) === true;
+    } catch {
+        return false;
+    }
+}
+
+async function fetchResource(url, ctx, options = {}) {
+    const checkRobots = options.checkRobots === true;
+    const robotsCache = options.robotsCache || new Map();
+    const maxBytes = options.maxBytes || MAX_CONTENT_BYTES;
+    let current = url;
+    const seen = new Set();
+
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+        let parsed;
+        try {
+            parsed = new URL(current);
+        } catch {
+            throw new SafeUrlError("This URL is not allowed.");
+        }
+        current = parsed.href;
+        if (seen.has(current)) throw new SafeUrlError("This URL is not allowed.");
+        seen.add(current);
+
+        await assertSafeUrl(current);
+
+        if (checkRobots) {
+            const robots = await loadRobots(parsed.origin, robotsCache, ctx);
+            if (!robotsAllow(robots, current)) {
+                throw new RobotsDisallowedError(robots && robots.reason ? robots.reason : "disallowed");
+            }
+        }
+
+        const res = await requestOnce(current, ctx, maxBytes);
+        if (!REDIRECT_STATUSES.has(res.status)) {
+            return { url: current, status: res.status, data: res.data, headers: res.headers || {} };
+        }
+
+        const location = res.headers && (res.headers.location || res.headers.Location);
+        if (!location || hop === MAX_REDIRECTS) {
+            throw new SafeUrlError("This URL is not allowed.");
+        }
+        try {
+            current = new URL(location, current).href;
+        } catch {
+            throw new SafeUrlError("This URL is not allowed.");
+        }
+    }
+
+    throw new SafeUrlError("This URL is not allowed.");
+}
+
+async function loadRobots(origin, cache, ctx) {
+    if (cache.has(origin)) return cache.get(origin);
+
+    const robotsUrl = new URL("/robots.txt", origin).href;
+    let decision = DENY_UNAVAILABLE;
+    try {
+        const res = await fetchResource(robotsUrl, ctx, {
+            checkRobots: false,
+            robotsCache: cache,
+            maxBytes: MAX_ROBOTS_BYTES,
+        });
+        if (res.status === 401 || res.status === 403) {
+            decision = DENY_ALL;
+        } else if (res.status >= 200 && res.status < 300) {
+            const body = typeof res.data === "string" ? res.data.slice(0, MAX_ROBOTS_BYTES) : "";
+            decision = robotsParser(robotsUrl, body);
+        } else if (res.status >= 400 && res.status < 500) {
+            decision = ALLOW_ALL;
+        } else {
+            decision = DENY_UNAVAILABLE;
+        }
+    } catch (err) {
+        if (err instanceof SafeUrlError) {
+            cache.set(origin, DENY_ALL);
+            throw err;
+        }
+        if (err instanceof ResponseTooLargeError) {
+            decision = DENY_ALL;
+        } else {
+            decision = DENY_UNAVAILABLE;
+        }
+    }
+
+    cache.set(origin, decision);
+    return decision;
+}
 
 const STOP_DOMAINS = new Set([
     "youtube.com",
@@ -31,15 +334,6 @@ const STOP_EXTENSIONS = new Set([
     ".jpeg", ".gif", ".webp", ".mp4", ".webm", ".mp3", ".wav",
     ".pdf", ".doc", ".docx", ".zip", ".tar", ".gz",
 ]);
-
-function isValidUrl(string) {
-    try {
-        const u = new URL(string);
-        return u.protocol === "http:" || u.protocol === "https:";
-    } catch {
-        return false;
-    }
-}
 
 function decodeCfEmail(encoded) {
     try {
@@ -191,10 +485,18 @@ function normalizeUrl(url) {
     }
 }
 
-async function crawl(startUrl, mode, depth = 1) {
-    const visited = new Set();
-    const queue = [{ url: normalizeUrl(startUrl), d: 0 }];
+async function crawl(startUrl, mode, depth = 1, ctx = {}) {
+    const normalizedStart = normalizeUrl(String(startUrl).trim());
+    await assertSafeUrl(normalizedStart);
 
+    const robotsCache = new Map();
+    const startRobots = await loadRobots(new URL(normalizedStart).origin, robotsCache, ctx);
+    if (!robotsAllow(startRobots, normalizedStart)) {
+        throw new RobotsDisallowedError(startRobots && startRobots.reason ? startRobots.reason : "disallowed");
+    }
+
+    const visited = new Set();
+    const queue = [{ url: normalizedStart, d: 0 }];
     const result = {
         pages: [],
         emails: new Set(),
@@ -202,25 +504,20 @@ async function crawl(startUrl, mode, depth = 1) {
         sites: new Set(),
     };
 
-    while (queue.length) {
+    while (queue.length && result.pages.length < MAX_PAGES) {
         const { url, d } = queue.shift();
         const normalized = normalizeUrl(url);
         if (visited.has(normalized) || d > depth) continue;
         visited.add(normalized);
+        const isStart = result.pages.length === 0 && visited.size === 1;
 
         try {
-            const res = await axios.get(url, {
-                headers: {
-                    "User-Agent": "ContactCrawler/1.0",
-                    "Accept": "text/html,application/xhtml+xml",
-                },
-                timeout: 15000,
-                maxRedirects: 5,
-                validateStatus: status => status < 400,
+            const page = await fetchResource(normalized, ctx, {
+                checkRobots: true,
+                robotsCache,
             });
-
-            const html = res.data;
-            if (typeof html !== "string") continue;
+            const html = page.data;
+            if (page.status >= 400 || typeof html !== "string") continue;
 
             if (mode === "all" || mode === "emails") {
                 extractEmails(html).forEach(e => result.emails.add(e));
@@ -231,14 +528,20 @@ async function crawl(startUrl, mode, depth = 1) {
             }
 
             if (mode === "all" || mode === "sites") {
-                const links = extractLinks(html, url);
-                links.forEach(l => result.sites.add(l));
-                links.forEach(l => queue.push({ url: l, d: d + 1 }));
+                const links = extractLinks(html, page.url);
+                for (const link of links) {
+                    result.sites.add(link);
+                    if (d + 1 > depth) continue;
+                    if (visited.has(normalizeUrl(link))) continue;
+                    if (isObviouslyBlocked(link)) continue;
+                    if (visited.size + queue.length >= MAX_PAGES) continue;
+                    queue.push({ url: link, d: d + 1 });
+                }
             }
 
-            result.pages.push(normalized);
-        } catch {
-            // ignore individual page failures
+            result.pages.push(normalizeUrl(page.url));
+        } catch (err) {
+            if (isStart && err instanceof HttpError) throw err;
         }
     }
 
@@ -250,35 +553,85 @@ async function crawl(startUrl, mode, depth = 1) {
     };
 }
 
-app.post("/crawl", async (req, res) => {
-    try {
-        const { url, mode } = req.body;
+function allowedOrigins() {
+    const raw = process.env.ALLOWED_ORIGINS;
+    if (raw == null || String(raw).trim() === "") return [DEFAULT_ALLOWED_ORIGIN];
+    const origins = String(raw)
+        .split(",")
+        .map(origin => origin.trim())
+        .filter(origin => origin && origin !== "*");
+    return origins.length ? origins : [DEFAULT_ALLOWED_ORIGIN];
+}
 
-        if (!url || typeof url !== "string") {
-            return res.status(400).json({ error: "A valid URL string is required" });
+function createApp(options = {}) {
+    const app = express();
+    app.disable("x-powered-by");
+    app.set("trust proxy", 1);
+    app.use(express.json({ limit: "32kb" }));
+
+    app.use((req, res, next) => {
+        const origin = req.headers.origin;
+        const allowed = allowedOrigins();
+        const originAllowed = typeof origin === "string" && allowed.includes(origin);
+        if (originAllowed) {
+            res.setHeader("Access-Control-Allow-Origin", origin);
+            res.setHeader("Vary", "Origin");
+            res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+            res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         }
-
-        if (!isValidUrl(url)) {
-            return res.status(400).json({ error: "Invalid URL. Must start with http:// or https://" });
+        if (req.method === "OPTIONS") {
+            return res.sendStatus(originAllowed ? 204 : 403);
         }
+        if (typeof origin === "string" && origin && !originAllowed) {
+            return res.status(403).json({ error: "Origin is not allowed." });
+        }
+        next();
+    });
 
-        const validModes = ["all", "emails", "phones", "sites"];
-        const crawlMode = validModes.includes(mode) ? mode : "all";
+    const crawlLimiter = rateLimit({
+        windowMs: options.rateLimitWindowMs || RATE_LIMIT_WINDOW_MS,
+        limit: options.rateLimitMax || RATE_LIMIT_MAX,
+        standardHeaders: "draft-8",
+        legacyHeaders: false,
+        handler: (req, res) => {
+            res.status(429).json({ error: "Too many crawl requests. Please try again later." });
+        },
+    });
 
-        const data = await crawl(url.trim(), crawlMode, 1);
-        res.json(data);
-    } catch (err) {
-        res.status(500).json({ error: "Crawl failed. Please check the URL and try again." });
-    }
-});
+    app.post("/crawl", crawlLimiter, async (req, res) => {
+        try {
+            const body = req.body || {};
+            const { url, mode } = body;
 
-app.get("/health", (req, res) => {
-    res.json({ status: "ok", mode: "cf-email-decoder" });
-});
+            if (!url || typeof url !== "string") {
+                return res.status(400).json({ error: "A valid URL string is required" });
+            }
+
+            const validModes = ["all", "emails", "phones", "sites"];
+            const crawlMode = validModes.includes(mode) ? mode : "all";
+
+            const data = await crawl(url.trim(), crawlMode, 1);
+            res.json(data);
+        } catch (err) {
+            if (err instanceof HttpError) {
+                return res.status(err.status).json({ error: err.message });
+            }
+            res.status(500).json({ error: "Crawl failed. Please check the URL and try again." });
+        }
+    });
+
+    app.get("/health", (req, res) => {
+        res.json({ status: "ok", mode: "cf-email-decoder" });
+    });
+
+    return app;
+}
+
+const app = createApp();
 
 const PORT = process.env.PORT || 3000;
 if (process.env.NODE_ENV !== "test") {
-    app.listen(PORT, () => console.log("running on", PORT));
+    app.listen(PORT, "0.0.0.0", () => console.log("running on", PORT));
 }
 
 module.exports = {
@@ -288,4 +641,15 @@ module.exports = {
     extractLinks,
     crawl,
     app,
+    createApp,
+    assertSafeUrl,
+    isBlockedIp,
+    isBlockedHostname,
+    getFilteringAgents,
+    MAX_PAGES,
+    MAX_CONTENT_BYTES,
+    USER_AGENT,
+    SafeUrlError,
+    RobotsDisallowedError,
+    ResponseTooLargeError,
 };
