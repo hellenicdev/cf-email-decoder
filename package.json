@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "axios": "^1.20.0",
-    "express": "^4.22.3",
+    "express": "^5.3.0",
     "express-rate-limit": "^8.7.1",
     "ipaddr.js": "^2.5.0",
     "request-filtering-agent": "^3.2.1",
