@@ -148,27 +148,27 @@
 
 <main>
 <div class="card">
-  <div class="row">
-    <select id="mode">
+  <form class="row" id="crawlForm" onsubmit="event.preventDefault(); crawl();">
+    <select id="mode" aria-label="What to extract">
       <option value="all">All</option>
       <option value="emails">Emails only</option>
       <option value="phones">Phones only</option>
       <option value="sites">Sites only</option>
     </select>
-    <input id="url" type="url" placeholder="https://example.com" autofocus />
-    <button id="crawlBtn" onclick="crawl()">Crawl</button>
-  </div>
+    <input id="url" type="url" placeholder="https://example.com" aria-label="URL to crawl" autocomplete="url" required autofocus />
+    <button id="crawlBtn" type="submit">Crawl</button>
+  </form>
 </div>
 
-<div id="stats" class="stats" style="display:none;"></div>
+<div id="stats" class="stats" style="display:none;" aria-live="polite"></div>
 
 <div class="card">
-  <pre id="output">Enter a URL and click "Crawl" to begin.</pre>
+  <pre id="output" aria-live="polite">Enter a URL and click "Crawl" to begin.</pre>
 </div>
 
 <div class="actions">
-  <button class="secondary" onclick="download()" id="exportBtn" disabled>Export JSON</button>
-  <button class="secondary" onclick="clearOutput()">Clear</button>
+  <button type="button" class="secondary" onclick="download()" id="exportBtn" disabled>Export JSON</button>
+  <button type="button" class="secondary" onclick="clearOutput()">Clear</button>
 </div>
 
 <p class="info">Cloudflare <code>data-cfemail</code> protected emails are automatically decoded via XOR decryption. A crawl fetches at most 20 pages, skips private and metadata addresses, and obeys robots.txt. Results are not stored.</p>
@@ -216,7 +216,12 @@ async function crawl() {
             body: JSON.stringify({ url, mode })
         });
 
-        const data = await res.json();
+        let data;
+        try {
+            data = await res.json();
+        } catch {
+            data = { error: res.status === 429 ? "Too many requests. Please try again later." : "The server is starting up or unavailable. Please try again in a minute." };
+        }
 
         if (res.status !== 200) {
             out.textContent = "Error: " + (data.error || "Unknown error");
