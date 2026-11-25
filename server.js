@@ -624,6 +624,16 @@ function createApp(options = {}) {
         res.json({ status: "ok", mode: "cf-email-decoder" });
     });
 
+    app.use((req, res) => {
+        res.status(404).json({ error: "Not found" });
+    });
+
+    // eslint-disable-next-line no-unused-vars
+    app.use((err, req, res, next) => {
+        const bad = err && (err.type === "entity.parse.failed" || err.type === "entity.too.large");
+        res.status(bad ? 400 : 500).json({ error: bad ? "Invalid request body" : "Internal server error" });
+    });
+
     return app;
 }
 
